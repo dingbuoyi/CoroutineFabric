@@ -28,10 +28,10 @@ fun CoroutineCoordinator.launchOnce(
  *
  * If no execution for the key is active at submission time, this call runs [block] as the
  * execution and suspends until it completes. If an execution for the same key is already
- * active, the caller does not execute its own block and instead waits for the active execution
- * to complete: concurrent calls join the current execution. They never schedule or trigger any
- * additional execution — the Once strategy only ever runs the single active execution for the
- * key.
+ * active, the caller does not execute its own block and instead joins the active execution:
+ * it suspends until that execution completes. Concurrent callers join the current execution;
+ * they never schedule or trigger any additional execution — the Once strategy only ever runs
+ * the single active execution for the key.
  *
  * The caller observes the outcome of the joined execution:
  * - returns normally when the execution completes normally,
@@ -41,7 +41,7 @@ fun CoroutineCoordinator.launchOnce(
  *   coordinator's scope was cancelled) or when the scope is already cancelled at submission
  *   time.
  */
-suspend fun CoroutineCoordinator.once(
+suspend fun CoroutineCoordinator.joinOnce(
     key: CoordinatorKey.Once,
     block: suspend CoroutineScope.() -> Unit,
 ) {
@@ -84,7 +84,7 @@ fun CoroutineCoordinator.launchQueued(
  *   coordinator's scope was cancelled) or when the scope is already cancelled at submission
  *   time.
  */
-suspend fun CoroutineCoordinator.queued(
+suspend fun CoroutineCoordinator.joinQueued(
     key: CoordinatorKey.Queued,
     block: suspend CoroutineScope.() -> Unit,
 ) {

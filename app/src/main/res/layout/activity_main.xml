@@ -43,7 +43,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="② once — 挂起等待当前 execution 完成（1.5s）"
+                android:text="② joinOnce — 挂起等待当前 execution 完成（1.5s）"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -59,7 +59,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginEnd="4dp"
                     android:layout_weight="1"
-                    android:text="刷新并等待（once）" />
+                    android:text="刷新并等待（joinOnce）" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnOnceRapid"
@@ -75,7 +75,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="③ Queued — FIFO 串行（各 0.8s）"
+                android:text="③ launchQueued / joinQueued — FIFO 串行（各 0.8s）"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -91,7 +91,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginEnd="4dp"
                     android:layout_weight="1"
-                    android:text="排队 A/B/C（不等待）" />
+                    android:text="排队 A/B/C（launchQueued）" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnQueuedWait"
@@ -100,7 +100,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="4dp"
                     android:layout_weight="1"
-                    android:text="排队 A/B/C 并等待" />
+                    android:text="排队并等待（joinQueued）" />
             </LinearLayout>
 
             <TextView

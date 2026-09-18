@@ -19,8 +19,8 @@ import org.junit.Test
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /**
- * Queued strategy tests, per docs/CoroutineCoordinator-Test-Cases-v1.md sections 7-11
- * (UT-Q01 .. UT-Q11) plus the owning-scope cancellation and resubmission cases.
+ * Queued strategy tests, per docs/CoroutineCoordinator-Test-Cases-v1.1.md section 1
+ * (UT-Q01 .. UT-Q06) plus failure/cancellation cases beyond the catalog.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoroutineCoordinatorQueuedTest {
@@ -67,7 +67,7 @@ class CoroutineCoordinatorQueuedTest {
         }
     }
 
-    // UT-Q03 + UT-Q06: strict FIFO; submissions are accepted while an execution is active.
+    // UT-Q02 + UT-Q06: strict FIFO; submissions are accepted while an execution is active.
     @Test
     fun `submissions accepted while the first is active execute in strict FIFO order`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -89,13 +89,13 @@ class CoroutineCoordinatorQueuedTest {
             advanceUntilIdle()
 
             assertEquals("strict FIFO, no reordering", listOf("A", "B", "C", "D"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-Q04: executions never overlap - at most one active execution at any time.
+    // UT-Q03: executions never overlap - at most one active execution at any time.
     @Test
     fun `queued executions never overlap`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -134,7 +134,7 @@ class CoroutineCoordinatorQueuedTest {
         }
     }
 
-    // UT-Q05: launchQueued does not wait.
+    // UT-Q04: launchQueued does not wait.
     @Test
     fun `launchQueued returns immediately while the execution stays active`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -162,9 +162,9 @@ class CoroutineCoordinatorQueuedTest {
         }
     }
 
-    // UT-Q07: queued() waits for its OWN execution, not for the whole queue to drain.
+    // UT-Q05: joinQueued() waits for its OWN execution, not for the whole queue to drain.
     @Test
-    fun `queued suspends until its own execution completes, not until the queue drains`() = runTest {
+    fun `joinQueued suspends until its own execution completes, not until the queue drains`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.queued()
@@ -176,7 +176,7 @@ class CoroutineCoordinatorQueuedTest {
 
             val orderAtResume = CompletableDeferred<List<String>>()
             val b = launch {
-                coordinator.queued(key) { order.add("B") }
+                coordinator.joinQueued(key) { order.add("B") }
                 orderAtResume.complete(order.toList())
             }
             runCurrent()
@@ -198,15 +198,15 @@ class CoroutineCoordinatorQueuedTest {
             advanceUntilIdle()
             b.join()
             assertEquals(listOf("A", "B", "C"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-Q08: multiple queued callers wait independently; each resumes with its own execution.
+    // UT-Q05: multiple joinQueued callers wait independently; each resumes with its own execution.
     @Test
-    fun `multiple queued callers each resume with their own execution`() = runTest {
+    fun `multiple joinQueued callers each resume with their own execution`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.queued()
@@ -219,13 +219,13 @@ class CoroutineCoordinatorQueuedTest {
             runCurrent()
 
             val b = launch {
-                coordinator.queued(key) { order.add("B") }
+                coordinator.joinQueued(key) { order.add("B") }
                 bCallerResumed.complete(order.toList())
             }
             runCurrent()
-            val c = launch { coordinator.queued(key) { order.add("C"); cGate.await() } }
+            val c = launch { coordinator.joinQueued(key) { order.add("C"); cGate.await() } }
             runCurrent()
-            val d = launch { coordinator.queued(key) { order.add("D") } }
+            val d = launch { coordinator.joinQueued(key) { order.add("D") } }
             runCurrent()
 
             aDone.complete(Unit)
@@ -251,7 +251,7 @@ class CoroutineCoordinatorQueuedTest {
         }
     }
 
-    // UT-Q09: scope cancellation aborts the pending queue.
+    // UT-Q06: scope cancellation aborts the pending queue.
     @Test
     fun `scope cancellation aborts the pending queue and wakes the queued waiters`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -265,7 +265,7 @@ class CoroutineCoordinatorQueuedTest {
 
             val bError = CompletableDeferred<Throwable>()
             val b = launch {
-                val e = runCatching { coordinator.queued(key) { order.add("B") } }.exceptionOrNull()
+                val e = runCatching { coordinator.joinQueued(key) { order.add("B") } }.exceptionOrNull()
                 bError.complete(e!!)
             }
             runCurrent()
@@ -278,13 +278,12 @@ class CoroutineCoordinatorQueuedTest {
 
             assertEquals("B/C/D never execute after the scope is cancelled", listOf("A"), order)
             assertTrue(bError.getCompleted() is CancellationException)
-            assertFalse(coordinator.hasActiveWork(key))
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-Q10: failure under a normal Job follows structured concurrency.
+    // Additional beyond the v1.1 catalog: failure under a normal Job follows structured concurrency.
     @Test
     fun `failure under a regular job scope cancels the scope and aborts the remaining queue`() = runTest {
         val (handler, captured) = capturingExceptionHandler()
@@ -307,13 +306,13 @@ class CoroutineCoordinatorQueuedTest {
             assertEquals("B and C are aborted with the scope and never execute", listOf("A"), order)
             assertTrue(captured.get() is IllegalStateException)
             assertTrue("the regular parent scope is cancelled", scope.coroutineContext[Job]!!.isCancelled)
-            assertFalse(coordinator.hasActiveWork(key))
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-Q11: failure under SupervisorJob - no extra global cancellation from the coordinator.
+    // Additional beyond the v1.1 catalog: failure under SupervisorJob - no extra global
+    // cancellation from the coordinator.
     @Test
     fun `failure under a supervisor scope does not cancel the scope and the tail continues`() = runTest {
         val (handler, captured) = capturingExceptionHandler()
@@ -330,7 +329,7 @@ class CoroutineCoordinatorQueuedTest {
             assertEquals("the coordinator adds no extra cancellation", listOf("A", "B", "C"), order)
             assertTrue(captured.get() is IllegalStateException)
             assertFalse("the supervisor scope survives a child failure", scope.coroutineContext[Job]!!.isCancelled)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
@@ -348,7 +347,7 @@ class CoroutineCoordinatorQueuedTest {
             val e = CompletableDeferred<Throwable>()
             val job = launch {
                 val err = runCatching {
-                    coordinator.queued(key) { order.add("A"); throw CancellationException("user cancel") }
+                    coordinator.joinQueued(key) { order.add("A"); throw CancellationException("user cancel") }
                 }.exceptionOrNull()
                 e.complete(err!!)
             }
@@ -360,14 +359,14 @@ class CoroutineCoordinatorQueuedTest {
             assertTrue(e.getCompleted() is CancellationException)
             assertEquals("cancellation is not a failure: the queue continues", listOf("A", "B"), order)
             assertNull("the scope handler is not invoked", captured.get())
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
     @Test
-    fun `queued cancellation under a regular job scope is not a failure and the queue continues`() = runTest {
+    fun `joinQueued cancellation under a regular job scope is not a failure and the queue continues`() = runTest {
         val (handler, captured) = capturingExceptionHandler()
         val scope = CoroutineScope(coroutineContext + Job() + handler)
         val coordinator = CoroutineCoordinator(scope)
@@ -387,14 +386,14 @@ class CoroutineCoordinatorQueuedTest {
             assertEquals(listOf("A", "B", "C"), order)
             assertNull("cancellation is not a failure: the scope handler is not invoked", captured.get())
             assertTrue("the regular parent scope is still active", !scope.coroutineContext[Job]!!.isCancelled)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
     @Test
-    fun `queued cancellation under a supervisor scope is not a failure and the queue continues`() = runTest {
+    fun `joinQueued cancellation under a supervisor scope is not a failure and the queue continues`() = runTest {
         val (handler, captured) = capturingExceptionHandler()
         val scope = CoroutineScope(coroutineContext + SupervisorJob() + handler)
         val coordinator = CoroutineCoordinator(scope)
@@ -413,7 +412,7 @@ class CoroutineCoordinatorQueuedTest {
 
             assertEquals(listOf("A", "B", "C"), order)
             assertNull("cancellation is not a failure: the scope handler is not invoked", captured.get())
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
@@ -421,7 +420,7 @@ class CoroutineCoordinatorQueuedTest {
 
     // The suspended caller observes its own execution's failure; the queue continues.
     @Test
-    fun `a queued caller observes its own execution failure, later submissions continue`() = runTest {
+    fun `a joinQueued caller observes its own execution failure, later submissions continue`() = runTest {
         val (handler, captured) = capturingExceptionHandler()
         val scope = CoroutineScope(coroutineContext + SupervisorJob() + handler)
         val coordinator = CoroutineCoordinator(scope)
@@ -434,7 +433,7 @@ class CoroutineCoordinatorQueuedTest {
             val bError = CompletableDeferred<Throwable>()
             val b = launch {
                 val e = runCatching {
-                    coordinator.queued(key) { order.add("B"); throw IllegalStateException("boom") }
+                    coordinator.joinQueued(key) { order.add("B"); throw IllegalStateException("boom") }
                 }.exceptionOrNull()
                 bError.complete(e!!)
             }
@@ -452,7 +451,7 @@ class CoroutineCoordinatorQueuedTest {
             val c = captured.get()
             assertTrue(c is IllegalStateException)
             assertEquals("boom", c.message)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
@@ -479,7 +478,7 @@ class CoroutineCoordinatorQueuedTest {
             advanceUntilIdle()
 
             assertEquals(listOf("again"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
@@ -493,25 +492,29 @@ class CoroutineCoordinatorQueuedTest {
         val key1 = CoordinatorKey.queued()
         val key2 = CoordinatorKey.queued()
         val aDone = CompletableDeferred<Unit>()
-        try {
-            coordinator.launchQueued(key2) { aDone.await() }
-            runCurrent()
+    try {
+        val order = mutableListOf<String>()
+        coordinator.launchQueued(key2) { order.add("K2"); aDone.await() }
+        runCurrent()
 
-            coordinator.launchQueued(key1) { throw IllegalStateException("boom") }
-            advanceUntilIdle()
+        coordinator.launchQueued(key1) { order.add("K1"); throw IllegalStateException("boom") }
+        advanceUntilIdle()
 
-            assertTrue(captured.get() is IllegalStateException)
-            assertTrue("parent scope is cancelled", scope.coroutineContext[Job]!!.isCancelled)
-            assertFalse(coordinator.hasActiveWork(key1))
-            assertFalse(coordinator.hasActiveWork(key2))
-        } finally {
+        assertTrue(captured.get() is IllegalStateException)
+        assertTrue("parent scope is cancelled", scope.coroutineContext[Job]!!.isCancelled)
+        assertEquals(
+            "no further execution starts after the scope is cancelled: both keys released",
+            listOf("K2", "K1"),
+            order,
+        )
+    } finally {
             scope.cancel()
         }
     }
 
     // Owning-scope cancellation at submission time.
     @Test
-    fun `queued on a cancelled scope throws CancellationException and registers nothing`() = runTest {
+    fun `joinQueued on a cancelled scope throws CancellationException and registers nothing`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.queued()
@@ -519,13 +522,16 @@ class CoroutineCoordinatorQueuedTest {
             scope.cancel()
             var caught: Throwable? = null
             try {
-                coordinator.queued(key) { error("must not run") }
+                coordinator.joinQueued(key) { error("must not run") }
             } catch (e: Throwable) {
                 caught = e
             }
             assertTrue(caught is CancellationException)
             assertTrue(caught!!.message!!.contains("cancelled"))
-            assertFalse(coordinator.hasActiveWork(key))
+            val probe = CompletableDeferred<Unit>()
+            coordinator.launchQueued(key) { probe.complete(Unit) }
+            advanceUntilIdle()
+            assertFalse("a cancelled-scope accepts no new work", probe.isCompleted)
         } finally {
             scope.cancel()
         }
@@ -543,7 +549,6 @@ class CoroutineCoordinatorQueuedTest {
             advanceUntilIdle()
 
             assertTrue(order.isEmpty())
-            assertFalse(coordinator.hasActiveWork(key))
         } finally {
             scope.cancel()
         }
@@ -560,12 +565,12 @@ class CoroutineCoordinatorQueuedTest {
             coordinator.launchQueued(key) { order.add("B") }
             advanceUntilIdle()
             assertEquals(listOf("A", "B"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
 
             coordinator.launchQueued(key) { order.add("C") }
             advanceUntilIdle()
             assertEquals(listOf("A", "B", "C"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }

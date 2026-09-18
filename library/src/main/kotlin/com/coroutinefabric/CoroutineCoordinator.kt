@@ -34,11 +34,6 @@ class CoroutineCoordinator(private val scope: CoroutineScope) {
      */
     internal fun isActive(): Boolean = scope.isActive
 
-    /** Test/inspection hook: whether [key] currently has running, queued or pending work. */
-    internal fun hasActiveWork(key: CoordinatorKey): Boolean = synchronized(lock) {
-        states.containsKey(key)
-    }
-
     /**
      * Registers a Once submission and returns the submission whose completion bounds the current
      * execution: the newly registered submission when the key was idle, otherwise the running

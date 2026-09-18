@@ -16,8 +16,8 @@ import com.coroutinefabric.CoroutineCoordinator
 import com.coroutinefabric.launchCoalesced
 import com.coroutinefabric.launchOnce
 import com.coroutinefabric.launchQueued
-import com.coroutinefabric.once
-import com.coroutinefabric.queued
+import com.coroutinefabric.joinOnce
+import com.coroutinefabric.joinQueued
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -68,22 +68,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun submitOnce() {
         coordinator.launchOnce(initKey) {
-            log("once: 初始化开始（2s）")
+            log("launchOnce: 初始化开始（2s）")
             delay(2000)
-            log("once: 初始化完成")
+            log("launchOnce: 初始化完成")
         }
         log("launchOnce: 已提交（同 key 已有活动时静默忽略，不等待）")
     }
 
     private fun submitOnceAndWait() {
         lifecycleScope.launch {
-            log("once: 进入 once()（1.5s，等待执行完成）")
-            coordinator.once(refreshKey) {
-                log("once: 执行开始（1.5s）")
+            log("joinOnce: 进入 joinOnce()（1.5s，等待执行完成）")
+            coordinator.joinOnce(refreshKey) {
+                log("joinOnce: 执行开始（1.5s）")
                 delay(1500)
-                log("once: 执行完成")
+                log("joinOnce: 执行完成")
             }
-            log("once: once() 返回（当前 execution 已完成）")
+            log("joinOnce: joinOnce() 返回（当前 execution 已完成）")
         }
     }
 
@@ -91,16 +91,16 @@ class MainActivity : AppCompatActivity() {
         repeat(4) { i ->
             lifecycleScope.launch {
                 delay(i * 300L)
-                log("once[$i]: 进入 once()")
-                coordinator.once(refreshKey) {
-                    log("once[$i]: block 真正执行（1.5s）")
+                log("joinOnce[$i]: 进入 joinOnce()")
+                coordinator.joinOnce(refreshKey) {
+                    log("joinOnce[$i]: block 真正执行（1.5s）")
                     delay(1500)
-                    log("once[$i]: block 执行完成")
+                    log("joinOnce[$i]: block 执行完成")
                 }
-                log("once[$i]: once() 返回（等待当前 execution 完成）")
+                log("joinOnce[$i]: joinOnce() 返回（等待当前 execution 完成）")
             }
         }
-        log("once: 连续调用 4 次（间隔 300ms）—— 只有首个 block 执行，其余等待当前 execution")
+        log("joinOnce: 连续调用 4 次（间隔 300ms）—— 只有首个 block 执行，其余 join 当前 execution")
     }
 
     private fun submitQueued() {
@@ -117,15 +117,15 @@ class MainActivity : AppCompatActivity() {
     private fun submitQueuedAndWait() {
         listOf("A", "B", "C").forEach { name ->
             lifecycleScope.launch {
-                coordinator.queued(uploadKey) {
-                    log("queued: 任务 $name 开始（0.8s）")
+                coordinator.joinQueued(uploadKey) {
+                    log("joinQueued: 任务 $name 开始（0.8s）")
                     delay(800)
-                    log("queued: 任务 $name 完成")
+                    log("joinQueued: 任务 $name 完成")
                 }
-                log("queued: 任务 $name 的 queued() 返回（等到自己的 execution 完成）")
+                log("joinQueued: 任务 $name 的 joinQueued() 返回（等到自己的 execution 完成）")
             }
         }
-        log("queued: 已提交 A/B/C（等待方式：各自的 queued() 在自己的执行完成后返回）")
+        log("joinQueued: 已提交 A/B/C（等待方式：各自的 joinQueued() 在自己的执行完成后返回）")
     }
 
     // Temperature control: the "device" applies a setpoint slowly (1.5s). While it is

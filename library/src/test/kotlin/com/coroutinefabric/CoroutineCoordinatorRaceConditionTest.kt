@@ -21,22 +21,19 @@ import org.junit.Test
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /**
- * Internal concurrency robustness tests for CoroutineCoordinator.
+ * Layer 2 (Transition) and Layer 3 (Concurrency Robustness) tests, per
+ * docs/CoroutineCoordinator-Test-Cases-v1.1.md sections 2-3.
  *
- * Cross-thread submission safety is not part of the public API contract.
- *
- * This file holds two layers: deterministic virtual-time tests that pin
- * state-transition boundaries (finish <-> submit, promotion, cancellation),
- * and real-thread stress tests that protect the current implementation
- * against internal races introduced by its synchronization/state-transition
- * model.
- *
- * Passing the real-thread stress tests must not be interpreted as expanding
+ * Cross-thread submission safety is not part of the public API contract. The real-thread
+ * stress tests protect the current implementation against internal races introduced by its
+ * synchronization/state-transition model; passing them must not be interpreted as expanding
  * the public thread-safety contract.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoroutineCoordinatorRaceConditionTest {
 
+    // Transition (Layer 2): finish <-> submit - a submission at the completion boundary is
+    // not lost.
     @Test
     fun `submission arriving when the running task completes is not lost`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -54,16 +51,16 @@ class CoroutineCoordinatorRaceConditionTest {
             advanceUntilIdle()
 
             assertEquals(listOf("A", "B"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // Concurrent submitters: coroutine creation order is NOT the Coordinator submission order,
-    // so no execution-order assertion is made here. The invariants that must hold in any
-    // interleaving are: no lost submission, no duplicate execution, no overlap. Strict FIFO
-    // is a contract verified by the deterministic test in CoroutineCoordinatorQueuedTest.
+    // Robustness (Layer 3): concurrent submitters: coroutine creation order is NOT the
+    // Coordinator submission order, so no execution-order assertion is made here. The
+    // invariants that must hold in any interleaving are: no lost submission, no duplicate
+    // execution, no overlap. Strict FIFO is the Layer 1 contract (UT-Q02).
     @Test
     fun `concurrent submitters on the same key each execute exactly once, never in parallel`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -89,16 +86,16 @@ class CoroutineCoordinatorRaceConditionTest {
             assertEquals("no lost submission", n, executed.size)
             assertEquals("no duplicate execution", (0 until n).toSet(), executed.toSet())
             assertEquals("same-key executions never overlap", 1, maxActiveExecutions.get())
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // Concurrent submitters: which pending submission ends up last depends on the actual
-    // Coordinator submission order, not on coroutine creation order, so the winner is only
-    // required to be one of B0..B15. Latest-wins is a contract verified by the
-    // deterministic B -> C -> D test in CoroutineCoordinatorCoalescedTest.
+    // Robustness (Layer 3): concurrent coalesced submitters: which pending submission ends up
+    // last depends on the actual Coordinator submission order, not on coroutine creation
+    // order, so the winner is only required to be one of B0..B15. Latest-wins is the Layer 1
+    // contract (UT-C02/UT-C05).
     @Test
     fun `concurrent coalesced submitters keep exactly one pending winner`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -131,12 +128,13 @@ class CoroutineCoordinatorRaceConditionTest {
                 "the winner is one of the concurrent pending submissions",
                 (0 until 16).any { order.last() == "B$it" },
             )
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, "probe")
         } finally {
             scope.cancel()
         }
     }
 
+    // Robustness (Layer 3, real threads): concurrent launchOnce starts exactly one execution.
     @Test
     fun `real threads - concurrent launchOnce starts exactly one execution`() {
         repeat(20) {
@@ -183,6 +181,7 @@ class CoroutineCoordinatorRaceConditionTest {
         }
     }
 
+    // Robustness (Layer 3, real threads): queued submissions are all executed, never in parallel.
     @Test
     fun `real threads - queued submissions are all executed, never in parallel`() {
         repeat(10) {
@@ -223,6 +222,7 @@ class CoroutineCoordinatorRaceConditionTest {
         }
     }
 
+    // Robustness (Layer 3, real threads): completion and submission race never loses a submission.
     @Test
     fun `real threads - completion and submission race never loses a submission`() {
         repeat(20) {
@@ -275,13 +275,14 @@ class CoroutineCoordinatorRaceConditionTest {
         }
     }
 
+    // Robustness (Layer 3, real threads): concurrent joinOnce calls never overlap.
     @Test
-    fun `real threads - concurrent once calls never overlap, joiners only wait`() {
+    fun `real threads - concurrent joinOnce calls never overlap, joiners only wait`() {
         // Under a real-thread storm a submitter may arrive after the current execution already
         // finished; it then legitimately starts the next execution. The invariants that must
         // hold in any interleaving are: executions never overlap, and a block only ever runs as
         // the accepted execution of its round (the strict "only the first runs, the rest join"
-        // semantics are covered deterministically in CoroutineCoordinatorOnceTest).
+        // semantics are the Layer 1 contract in CoroutineCoordinatorOnceTest).
         repeat(10) {
             runBlocking {
                 val job = Job()
@@ -300,7 +301,7 @@ class CoroutineCoordinatorRaceConditionTest {
                         scope.launch {
                             barrier.await()
                             try {
-                                coordinator.once(key) {
+                                coordinator.joinOnce(key) {
                                     val c = running.incrementAndGet()
                                     maxConcurrent.updateAndGet { maxOf(it, c) }
                                     executions.incrementAndGet()

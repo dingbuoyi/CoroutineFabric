@@ -18,10 +18,10 @@ import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /**
- * Coordination domain and lifecycle tests, per docs/CoroutineCoordinator-Test-Cases-v1.md
- * sections 16-18: the coordinator instance identity IS the coordination domain
- * (UT-D01 .. UT-D03), the coordinator's lifetime equals the owning scope's lifetime
- * (UT-L01 / UT-L02), and strategy mixing is a compile-time contract (section 18).
+ * Coordination domain, lifecycle and type-binding tests, per
+ * docs/CoroutineCoordinator-Test-Cases-v1.1.md section 1 (UT-D01 .. UT-D02, UT-L01, UT-T01):
+ * the coordinator instance identity IS the coordination domain, the coordinator's lifetime
+ * equals the owning scope's lifetime, and strategy mixing is a compile-time contract.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoroutineCoordinatorDomainTest {
@@ -31,7 +31,7 @@ class CoroutineCoordinatorDomainTest {
         companion object Key : CoroutineContext.Key<ScopeMarker>
     }
 
-    // UT-D01: same coordinator + same key coordinates.
+    // Foundational (assumed by the whole catalog): same coordinator + same key coordinates.
     @Test
     fun `the same key instance shares one coordination slot in one coordinator`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -49,13 +49,13 @@ class CoroutineCoordinatorDomainTest {
 
             // Same instance: strictly serialized, both executed.
             assertEquals(listOf("A", "B"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertQueuedKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-D02: same coordinator + different keys are independent (key object identity).
+    // UT-D01: same coordinator + different keys are independent (key object identity).
     @Test
     fun `two once() instances are different keys (object identity)`() = runTest {
         val k1 = CoordinatorKey.once()
@@ -77,13 +77,14 @@ class CoroutineCoordinatorDomainTest {
             assertEquals(listOf("A", "B"), order)
             aDone.complete(Unit)
             advanceUntilIdle()
-            assertFalse(coordinator.hasActiveWork(k1))
-            assertFalse(coordinator.hasActiveWork(k2))
+            assertOnceKeyIdle(coordinator, k1)
+            assertOnceKeyIdle(coordinator, k2)
         } finally {
             scope.cancel()
         }
     }
 
+    // UT-D01: different keys in one coordinator are isolated and run in parallel.
     @Test
     fun `different keys in one coordinator are isolated and run in parallel`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -93,7 +94,7 @@ class CoroutineCoordinatorDomainTest {
         val aDone = CompletableDeferred<Unit>()
         try {
             val order = mutableListOf<String>()
-            val a = launch { coordinator.once(k1) { aDone.await() } }
+            val a = launch { coordinator.joinOnce(k1) { aDone.await() } }
             runCurrent()
 
             coordinator.launchOnce(k2) { order.add("B") }
@@ -104,8 +105,8 @@ class CoroutineCoordinatorDomainTest {
             advanceUntilIdle()
             a.join()
 
-            assertFalse(coordinator.hasActiveWork(k1))
-            assertFalse(coordinator.hasActiveWork(k2))
+            assertOnceKeyIdle(coordinator, k1)
+            assertOnceKeyIdle(coordinator, k2)
         } finally {
             scope.cancel()
         }
@@ -131,14 +132,14 @@ class CoroutineCoordinatorDomainTest {
             bDone.complete(Unit)
             advanceUntilIdle()
 
-            assertFalse(coordinator.hasActiveWork(k1))
-            assertFalse(coordinator.hasActiveWork(k2))
+            assertQueuedKeyIdle(coordinator, k1)
+            assertQueuedKeyIdle(coordinator, k2)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-D03: different coordinators + same key are independent.
+    // UT-D02: different coordinators + same key are independent.
     @Test
     fun `the same key in two coordinators on the same scope is independent`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -158,13 +159,14 @@ class CoroutineCoordinatorDomainTest {
             assertEquals(listOf("A", "B"), order)
             aDone.complete(Unit)
             advanceUntilIdle()
-            assertFalse(c1.hasActiveWork(key))
-            assertFalse(c2.hasActiveWork(key))
+            assertOnceKeyIdle(c1, key)
+            assertOnceKeyIdle(c2, key)
         } finally {
             scope.cancel()
         }
     }
 
+    // UT-D02: the same key in two coordinators runs in parallel, each with its own execution.
     @Test
     fun `the same key in two coordinators on the same scope executes independently in parallel`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -205,13 +207,14 @@ class CoroutineCoordinatorDomainTest {
             bDone.complete(Unit)
             advanceUntilIdle()
 
-            assertFalse(c1.hasActiveWork(key))
-            assertFalse(c2.hasActiveWork(key))
+            assertQueuedKeyIdle(c1, key)
+            assertQueuedKeyIdle(c2, key)
         } finally {
             scope.cancel()
         }
     }
 
+    // UT-D02: coordinators with different scopes are fully isolated for the same key.
     @Test
     fun `coordinators with different scopes are fully isolated for the same key`() = runTest {
         val scopeA = independentSupervisedTestScope(coroutineContext)
@@ -230,15 +233,15 @@ class CoroutineCoordinatorDomainTest {
             assertEquals(listOf("A", "B"), order)
             aDone.complete(Unit)
             advanceUntilIdle()
-            assertFalse(cA.hasActiveWork(key))
-            assertFalse(cB.hasActiveWork(key))
+            assertQueuedKeyIdle(cA, key)
+            assertQueuedKeyIdle(cB, key)
         } finally {
             scopeA.cancel()
             scopeB.cancel()
         }
     }
 
-    // UT-L: workers run with the coordinator scope's context.
+    // Additional beyond the v1.1 catalog: workers run with the coordinator scope's context.
     @Test
     fun `workers run on the coordinator's scope context`() = runTest {
         val scope = CoroutineScope(
@@ -283,36 +286,35 @@ class CoroutineCoordinatorDomainTest {
             advanceUntilIdle()
 
             assertEquals(listOf("O", "Q1", "C1"), order)
-            assertFalse(coordinator.hasActiveWork(keyOnce))
-            assertFalse(coordinator.hasActiveWork(keyQueued))
-            assertFalse(coordinator.hasActiveWork(keyCoalesced))
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-L02: the coordinator creates no independent lifecycle; the scope is the only lever.
+    // UT-L01: the coordinator holds no job of its own; cancelling the scope is the only
+    // lifecycle lever, and no detached/orphan coroutine is left behind.
     @Test
     fun `a coordinator holds no job of its own - cancelling the scope is the only lifecycle lever`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.queued()
         val aDone = CompletableDeferred<Unit>()
-        try {
-            coordinator.launchQueued(key) { aDone.await() }
-            coordinator.launchQueued(key) { }
-            runCurrent()
-            assertTrue(coordinator.hasActiveWork(key))
+    try {
+        val order = mutableListOf<String>()
+        coordinator.launchQueued(key) { order.add("A"); aDone.await() }
+        coordinator.launchQueued(key) { order.add("B") }
+        runCurrent()
+        assertEquals("A is running and B is queued behind it: the key is busy", listOf("A"), order)
 
-            scope.cancel()
-            advanceUntilIdle()
-            assertFalse("all work dies with the scope", coordinator.hasActiveWork(key))
-        } finally {
+        scope.cancel()
+        advanceUntilIdle()
+        assertEquals("all work dies with the scope; the queued B never starts", listOf("A"), order)
+    } finally {
             scope.cancel()
         }
     }
 
-    // Section 18: strategy mixing is a compile-time contract; the Kotlin compiler is the
+    // UT-T01: strategy mixing is a compile-time contract; the Kotlin compiler is the
     // first-stage verification (no compile-testing framework required).
     @Test
     fun `strategy mixing is blocked at compile time by the key subtypes`() {
@@ -323,7 +325,7 @@ class CoroutineCoordinatorDomainTest {
         //   coordinator.launchQueued(onceKey) { }            // error: Once is not Queued
         //   coordinator.launchCoalesced(onceKey, 1) { }      // error: Once is not Coalesced<T>
         //   val q = CoordinatorKey.queued()
-        //   coordinator.once(q) { }                          // error: Queued is not Once
+        //   coordinator.joinOnce(q) { }                          // error: Queued is not Once
         //
         // The subtypes are final and unrelated, so no instance of one can ever be an instance
         // of another (the compiler already rejects any such check).

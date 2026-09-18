@@ -20,8 +20,8 @@ import org.junit.Test
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /**
- * Coalesced strategy tests, per docs/CoroutineCoordinator-Test-Cases-v1.md sections 12-15
- * (UT-C01 .. UT-C07) plus the owning-scope cancellation and failure cases.
+ * Coalesced strategy tests, per docs/CoroutineCoordinator-Test-Cases-v1.1.md section 1
+ * (UT-C01 .. UT-C06) plus owning-scope cancellation and failure cases beyond the catalog.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoroutineCoordinatorCoalescedTest {
@@ -38,13 +38,13 @@ class CoroutineCoordinatorCoalescedTest {
             advanceUntilIdle()
 
             assertEquals(listOf("A"), executed)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, "probe")
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-C02: a pending submission executes after the running one.
+    // UT-C02: a pending submission executes after the running one (single-pending form).
     @Test
     fun `a pending submission executes after the running one`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -64,13 +64,13 @@ class CoroutineCoordinatorCoalescedTest {
             advanceUntilIdle()
 
             assertEquals(listOf(1, 2), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, 0)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-C03 + UT-C04: only the latest pending executes (B/C never do) and the running
+    // UT-C02 + UT-C03: only the latest pending executes (B/C never do) and the running
     // execution is not cancelled by the new submissions.
     @Test
     fun `only the latest pending executes and the running execution is not cancelled`() = runTest {
@@ -99,13 +99,13 @@ class CoroutineCoordinatorCoalescedTest {
 
             assertEquals("B and C never execute; only the first and the latest do", listOf(1, 4), order)
             assertTrue("the running execution was not cancelled by the new submissions", aCompleted)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, 0)
         } finally {
             scope.cancel()
         }
     }
 
-    // Coalesced executions never overlap.
+    // Coalesced executions never overlap (Layer 1 invariant, beyond the catalog).
     @Test
     fun `coalesced executions never overlap`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -135,7 +135,7 @@ class CoroutineCoordinatorCoalescedTest {
         }
     }
 
-    // UT-C05: the submission uses the submission-time snapshot, not later mutations.
+    // UT-C04: the submission uses the submission-time snapshot, not later mutations.
     @Test
     fun `the latest pending executes with its submission-time snapshot`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -160,12 +160,13 @@ class CoroutineCoordinatorCoalescedTest {
             advanceUntilIdle()
 
             assertEquals(listOf("q1", "q3"), seen)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, MutableSearch("probe", emptyList()))
         } finally {
             scope.cancel()
         }
     }
 
+    // UT-C04: snapshot is invoked once per submission at submission time, even when superseded.
     @Test
     fun `snapshot is invoked once per submission at submission time, even when superseded`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -189,12 +190,13 @@ class CoroutineCoordinatorCoalescedTest {
 
             aDone.complete(Unit)
             advanceUntilIdle()
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, MutableSearch("probe", emptyList()))
         } finally {
             scope.cancel()
         }
     }
 
+    // UT-C04: mutable input is frozen at submit time, mutations after submit are not observed.
     @Test
     fun `mutable input is frozen at submit time, mutations after submit are not observed`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -224,6 +226,7 @@ class CoroutineCoordinatorCoalescedTest {
         }
     }
 
+    // UT-C04: snapshot is frozen even when the pending submission is superseded.
     @Test
     fun `snapshot is frozen even when the pending submission is superseded`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -253,6 +256,7 @@ class CoroutineCoordinatorCoalescedTest {
         }
     }
 
+    // Additional beyond the v1.1 catalog: default snapshot passes immutable values through.
     @Test
     fun `default snapshot passes immutable values through unchanged`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -268,7 +272,7 @@ class CoroutineCoordinatorCoalescedTest {
         }
     }
 
-    // UT-C06 (commitment point): a promoted pending submission cannot be replaced.
+    // UT-C05 (commitment point): a promoted pending submission cannot be replaced.
     // A running; B/C/D pending (latest = D); A completes -> D promoted to running (committed);
     // E arrives -> A -> D -> E, never A -> E.
     @Test
@@ -294,13 +298,13 @@ class CoroutineCoordinatorCoalescedTest {
             advanceUntilIdle()
 
             assertEquals("A -> D -> E, never A -> E", listOf(1, 2, 3), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, 0)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-C07: scope cancellation drops the latest pending.
+    // UT-C06: scope cancellation drops the latest pending.
     @Test
     fun `scope cancellation stops the latest pending submission from starting`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -318,7 +322,6 @@ class CoroutineCoordinatorCoalescedTest {
             advanceUntilIdle()
 
             assertEquals("the latest pending does not execute after the scope is cancelled", listOf(1), order)
-            assertFalse(coordinator.hasActiveWork(key))
         } finally {
             scope.cancel()
         }
@@ -339,7 +342,7 @@ class CoroutineCoordinatorCoalescedTest {
 
             assertEquals(listOf(1, 2), order)
             assertTrue(captured.get() is IllegalStateException)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, 0)
         } finally {
             scope.cancel()
         }
@@ -367,7 +370,6 @@ class CoroutineCoordinatorCoalescedTest {
             assertEquals("the latest pending is aborted with the scope", listOf(1), order)
             assertTrue(captured.get() is IllegalStateException)
             assertTrue("the regular parent scope is cancelled", scope.coroutineContext[Job]!!.isCancelled)
-            assertFalse(coordinator.hasActiveWork(key))
         } finally {
             scope.cancel()
         }
@@ -393,7 +395,7 @@ class CoroutineCoordinatorCoalescedTest {
 
             assertEquals(listOf(1, 2), order)
             assertNull("cancellation is not a failure: the scope handler is not invoked", captured.get())
-            assertFalse(coordinator.hasActiveWork(key))
+            assertCoalescedKeyIdle(coordinator, key, 0)
         } finally {
             scope.cancel()
         }
@@ -417,7 +419,6 @@ class CoroutineCoordinatorCoalescedTest {
 
             assertEquals(0, calls.get())
             assertTrue(order.isEmpty())
-            assertFalse(coordinator.hasActiveWork(key))
         } finally {
             scope.cancel()
         }

@@ -18,8 +18,8 @@ import org.junit.Test
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /**
- * Once strategy tests, per docs/CoroutineCoordinator-Test-Cases-v1.md sections 3-6
- * (UT-O01 .. UT-O11) plus the owning-scope cancellation cases.
+ * Once strategy tests, per docs/CoroutineCoordinator-Test-Cases-v1.1.md section 1
+ * (UT-O01 .. UT-O08) plus owning-scope cancellation and failure cases beyond the catalog.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoroutineCoordinatorOnceTest {
@@ -36,7 +36,7 @@ class CoroutineCoordinatorOnceTest {
             advanceUntilIdle()
 
             assertEquals(listOf("A"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
@@ -62,13 +62,13 @@ class CoroutineCoordinatorOnceTest {
             advanceUntilIdle()
 
             assertEquals("the dropped submission never executes", listOf("A"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-O03: multiple duplicate submissions are all dropped.
+    // UT-O02: multiple duplicate submissions are all dropped.
     @Test
     fun `multiple duplicate submissions while the execution is active are all dropped`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -90,13 +90,13 @@ class CoroutineCoordinatorOnceTest {
             advanceUntilIdle()
 
             assertEquals("B/C/D.. are all dropped while A is running", listOf("A"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-O04: a new submission executes after the previous completion.
+    // UT-O03: a new submission executes after the previous completion.
     // Once means "at most one ACTIVE execution", not "one execution per key lifetime".
     @Test
     fun `a new submission executes after the previous completion`() = runTest {
@@ -111,13 +111,14 @@ class CoroutineCoordinatorOnceTest {
             advanceUntilIdle()
 
             assertEquals(listOf("A", "B"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-O05: launchOnce does not wait for the execution.
+    // Additional beyond the v1.1 catalog (UT-O01 fire-and-forget form): launchOnce does not
+    // wait for the execution.
     @Test
     fun `launchOnce returns immediately while the execution stays active`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -145,9 +146,9 @@ class CoroutineCoordinatorOnceTest {
         }
     }
 
-    // UT-O06: the first once() caller executes the block and suspends until it completes.
+    // UT-O04: the first joinOnce caller executes the block and suspends until it completes.
     @Test
-    fun `the first once caller executes the block and suspends until it completes`() = runTest {
+    fun `the first joinOnce caller executes the block and suspends until it completes`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.once()
@@ -156,7 +157,7 @@ class CoroutineCoordinatorOnceTest {
             val order = mutableListOf<String>()
             val returned = CompletableDeferred<Unit>()
             val caller = launch {
-                coordinator.once(key) { order.add("A"); aDone.await() }
+                coordinator.joinOnce(key) { order.add("A"); aDone.await() }
                 returned.complete(Unit)
             }
             runCurrent()
@@ -169,15 +170,15 @@ class CoroutineCoordinatorOnceTest {
             caller.join()
 
             assertTrue(returned.isCompleted)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-O07: a duplicate caller joins the active execution; its own block never runs.
+    // UT-O05: a duplicate joinOnce caller joins the active execution; its own block never runs.
     @Test
-    fun `a duplicate once caller joins the active execution and its block never runs`() = runTest {
+    fun `a duplicate joinOnce caller joins the active execution and its block never runs`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.once()
@@ -189,7 +190,7 @@ class CoroutineCoordinatorOnceTest {
 
             val bError = CompletableDeferred<Throwable?>()
             val waiter = launch {
-                coordinator.once(key) { order.add("X") }
+                coordinator.joinOnce(key) { order.add("X") }
                 bError.complete(null)
             }
             runCurrent()
@@ -201,26 +202,26 @@ class CoroutineCoordinatorOnceTest {
 
             assertEquals("the waiter's block never ran; only A executed", listOf("A"), order)
             assertNull("the joiner resumes normally once the active execution completes", bError.getCompleted())
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-O08: multiple callers join the same execution; none of their blocks runs.
+    // UT-O06: multiple joiners join the same execution; none of their blocks runs.
     @Test
-    fun `multiple once callers join the same execution and none of their blocks run`() = runTest {
+    fun `multiple joinOnce callers join the same execution and none of their blocks run`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.once()
         val aDone = CompletableDeferred<Unit>()
         try {
             val order = mutableListOf<String>()
-            val a = launch { coordinator.once(key) { order.add("A"); aDone.await() } }
+            val a = launch { coordinator.joinOnce(key) { order.add("A"); aDone.await() } }
             runCurrent()
-            val b = launch { coordinator.once(key) { order.add("B") } }
-            val c = launch { coordinator.once(key) { order.add("C") } }
-            val d = launch { coordinator.once(key) { order.add("D") } }
+            val b = launch { coordinator.joinOnce(key) { order.add("B") } }
+            val c = launch { coordinator.joinOnce(key) { order.add("C") } }
+            val d = launch { coordinator.joinOnce(key) { order.add("D") } }
             runCurrent()
 
             assertEquals("only the first block executed", listOf("A"), order)
@@ -236,13 +237,13 @@ class CoroutineCoordinatorOnceTest {
             d.join()
 
             assertEquals("joiners never run their own block", listOf("A"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-O09 (P0): cancelling one joiner does not cancel the shared execution.
+    // UT-O07 (P0): cancelling one joiner does not cancel the shared execution.
     @Test
     fun `cancelling one joiner does not cancel the shared execution`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -253,11 +254,11 @@ class CoroutineCoordinatorOnceTest {
             val order = mutableListOf<String>()
             var aCompleted = false
             val a = launch {
-                coordinator.once(key) { order.add("A"); aDone.await(); aCompleted = true }
+                coordinator.joinOnce(key) { order.add("A"); aDone.await(); aCompleted = true }
             }
             runCurrent()
-            val b = launch { coordinator.once(key) { order.add("B") } }
-            val c = launch { coordinator.once(key) { order.add("C") } }
+            val b = launch { coordinator.joinOnce(key) { order.add("B") } }
+            val c = launch { coordinator.joinOnce(key) { order.add("C") } }
             runCurrent()
 
             assertEquals("A is the active execution; B and C only join it", listOf("A"), order)
@@ -275,13 +276,13 @@ class CoroutineCoordinatorOnceTest {
 
             assertTrue("the shared execution ran to completion", aCompleted)
             assertEquals(listOf("A"), order)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
     }
 
-    // UT-O10: cancelling one joiner does not affect the other joiners.
+    // UT-O07: cancelling one joiner does not affect the other joiners.
     @Test
     fun `cancelling one joiner does not affect the other joiners`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
@@ -291,16 +292,16 @@ class CoroutineCoordinatorOnceTest {
         try {
             val order = mutableListOf<String>()
             val a = launch {
-                coordinator.once(key) { order.add("A"); aDone.await() }
+                coordinator.joinOnce(key) { order.add("A"); aDone.await() }
             }
             runCurrent()
             val bError = CompletableDeferred<Throwable>()
             val b = launch {
-                bError.complete(runCatching { coordinator.once(key) { order.add("B") } }.exceptionOrNull()!!)
+                bError.complete(runCatching { coordinator.joinOnce(key) { order.add("B") } }.exceptionOrNull()!!)
             }
             val cError = CompletableDeferred<Throwable?>()
             val c = launch {
-                coordinator.once(key) { order.add("C") }
+                coordinator.joinOnce(key) { order.add("C") }
                 cError.complete(null)
             }
             runCurrent()
@@ -327,9 +328,10 @@ class CoroutineCoordinatorOnceTest {
         }
     }
 
-    // UT-O11: an execution exception reaches the joiners (and the scope handler).
+    // UT-O08: an execution exception reaches the joiners (and the scope handler) and the key
+    // state is cleaned up.
     @Test
-    fun `an execution exception reaches every once caller joined to it`() = runTest {
+    fun `an execution exception reaches every joinOnce caller joined to it`() = runTest {
         val (handler, captured) = capturingExceptionHandler()
         val scope = CoroutineScope(coroutineContext + SupervisorJob() + handler)
         val coordinator = CoroutineCoordinator(scope)
@@ -340,14 +342,14 @@ class CoroutineCoordinatorOnceTest {
             val bError = CompletableDeferred<Throwable>()
             val a = launch {
                 val e = runCatching {
-                    coordinator.once(key) { aDone.await(); throw IllegalStateException("boom") }
+                    coordinator.joinOnce(key) { aDone.await(); throw IllegalStateException("boom") }
                 }.exceptionOrNull()
                 aError.complete(e!!)
             }
             runCurrent()
             val b = launch {
                 val e = runCatching {
-                    coordinator.once(key) { error("joiner block must not run") }
+                    coordinator.joinOnce(key) { error("joiner block must not run") }
                 }.exceptionOrNull()
                 bError.complete(e!!)
             }
@@ -361,7 +363,7 @@ class CoroutineCoordinatorOnceTest {
             assertTrue(aError.getCompleted() is IllegalStateException)
             assertTrue("the joiner observes the same outcome", bError.getCompleted() is IllegalStateException)
             assertTrue("the failure also follows the scope's exception propagation", captured.get() is IllegalStateException)
-            assertFalse(coordinator.hasActiveWork(key))
+            assertOnceKeyIdle(coordinator, key)
         } finally {
             scope.cancel()
         }
@@ -369,7 +371,7 @@ class CoroutineCoordinatorOnceTest {
 
     // Owning-scope cancellation: a cancelled scope is the source of truth.
     @Test
-    fun `once on a cancelled scope throws CancellationException and registers nothing`() = runTest {
+    fun `joinOnce on a cancelled scope throws CancellationException and registers nothing`() = runTest {
         val scope = independentSupervisedTestScope(coroutineContext)
         val coordinator = CoroutineCoordinator(scope)
         val key = CoordinatorKey.once()
@@ -377,13 +379,16 @@ class CoroutineCoordinatorOnceTest {
             scope.cancel()
             var caught: Throwable? = null
             try {
-                coordinator.once(key) { error("must not run") }
+                coordinator.joinOnce(key) { error("must not run") }
             } catch (e: Throwable) {
                 caught = e
             }
             assertTrue(caught is CancellationException)
             assertTrue(caught!!.message!!.contains("cancelled"))
-            assertFalse(coordinator.hasActiveWork(key))
+            val probe = CompletableDeferred<Unit>()
+            coordinator.launchOnce(key) { probe.complete(Unit) }
+            advanceUntilIdle()
+            assertFalse("a cancelled scope accepts no new work", probe.isCompleted)
         } finally {
             scope.cancel()
         }
@@ -401,14 +406,13 @@ class CoroutineCoordinatorOnceTest {
             advanceUntilIdle()
 
             assertTrue(order.isEmpty())
-            assertFalse(coordinator.hasActiveWork(key))
         } finally {
             scope.cancel()
         }
     }
 
     @Test
-    fun `once failure under a regular job scope cancels the scope and later submissions are no-ops`() = runTest {
+    fun `joinOnce failure under a regular job scope cancels the scope and later submissions are no-ops`() = runTest {
         val (handler, captured) = capturingExceptionHandler()
         val scope = CoroutineScope(coroutineContext + Job() + handler)
         val coordinator = CoroutineCoordinator(scope)
@@ -419,7 +423,6 @@ class CoroutineCoordinatorOnceTest {
 
             assertTrue(captured.get() is IllegalStateException)
             assertTrue("the regular parent scope is cancelled", scope.coroutineContext[Job]!!.isCancelled)
-            assertFalse(coordinator.hasActiveWork(key))
 
             val order = mutableListOf<String>()
             coordinator.launchOnce(key) { order.add("again") }

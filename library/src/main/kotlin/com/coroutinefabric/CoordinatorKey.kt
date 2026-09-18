@@ -10,8 +10,8 @@ package com.coroutinefabric
  *
  * The coordination strategy is bound to the key at creation time by the factory used:
  *
- * - [once] creates a key usable only with [launchOnce] / [once]
- * - [queued] creates a key usable only with [launchQueued] / [queued]
+ * - [once] creates a key usable only with [launchOnce] / [joinOnce]
+ * - [queued] creates a key usable only with [launchQueued] / [joinQueued]
  * - [coalesced] creates a key usable only with [launchCoalesced]
  *
  * Passing a key to a launch function whose strategy does not match is a compile-time error,
