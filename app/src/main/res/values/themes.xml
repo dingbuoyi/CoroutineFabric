@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.CoroutineFabricDemo" parent="Theme.Material3.DayNight.NoActionBar" />
+
+    <style name="Widget.Demo.CompactButton" parent="Widget.Material3.Button">
+        <item name="android:textSize">13sp</item>
+        <item name="android:minHeight">36dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:paddingTop">6dp</item>
+        <item name="android:paddingBottom">6dp</item>
+    </style>
+</resources>
